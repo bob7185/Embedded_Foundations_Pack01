@@ -8,6 +8,7 @@ void main()
     OSCCON = 0x38;  //internal oscillator clock speed at 500 khz
     // setting the pin for the led fucntions
     TRISBbits.TRISB0 = 0; //configure portB0 as an output port where the led is connected
+    TRISBbits.TRISB1 = 0; // diagnostic pin
     
     //setting the pin for the push button to change the state
     TRISAbits.TRISA4 = 1; // configure as input digital pi 
@@ -17,7 +18,6 @@ void main()
     //TTimer 1 configuration for an exact 500 ms overflow 
     TMR1H = 0x0B;
     TMR1L = 0xDC;
-    //T1CON = 0x05; // instruction clock, 1:1 prescaler , no sync , timer on 
     T1CONbits.TMR1CS = 0 ; //instruction  clock
     T1CONbits.T1CKPS = 0; // 1:1 prescaler
     T1CONbits.nT1SYNC = 1; // no sync
@@ -35,6 +35,7 @@ void main()
     
     ButtonState_t buttonState = BUTTON_WAIT_PRESS;
     SystemState_t systemState = RUNNING;
+    LATBbits.LATB1 = 0; 
     
     while(1){
         
@@ -51,11 +52,19 @@ void main()
             break;
             case BUTTON_DEBOUNCE_PRESS:
             {
-                // if button has been low for more than 10 s  valid press swithc to wait for release
-                if( TMR0 > 2 && SWTCH_PIN == 0)
+                // allow at least 10 ms for mechanical bouncing to settle then check
+                if( TMR0 >= 10)
                 {
+                    if (SWTCH_PIN == 0)
+                    {
                     buttonState = BUTTON_WAIT_RELEASE;
+                    }
+                     else
+                    {
+                    buttonState = BUTTON_WAIT_PRESS;
+                     }
                 }
+                         
                 
             }
                 break;
@@ -70,23 +79,38 @@ void main()
                 break;
             case BUTTON_DEBOUNCE_RELEASE:
             {
-                if(TMR0 > 2 && SWTCH_PIN == 1)
+                if(TMR0 >= 10)
                 {
-                     buttonState = BUTTON_WAIT_PRESS;
+                    if(SWTCH_PIN == 1)
+                    {
+                      buttonState = BUTTON_WAIT_PRESS;
                     if (systemState == RUNNING)
                     {
                        systemState = PAUSED;
+                       LATBbits.LATB1 = 1; 
                       
                     }
                     else 
                     {
                         systemState = RUNNING;
-                                   TMR1H = 0x0B;
-                                  TMR1L = 0xDC;
-
-                            T1CONbits.TMR1ON = 1 ;
+                        LATBbits.LATB1 = 0; 
+                        TMR1H = 0x0B;
+                        TMR1L = 0xDC;
+                        TMR1IF = 0;
+                        T1CONbits.TMR1ON = 1 ;
                     }
+                    
+                    }
+                else
+                {
+                     buttonState = BUTTON_WAIT_RELEASE;
+                    
+                
                 }
+                   
+                }
+                
+
             
             }
                 break;
@@ -105,6 +129,7 @@ void main()
         }
         else if (systemState == PAUSED) {
          T1CONbits.TMR1ON = 0 ;// stop the timer 
+         TMR1IF = 0 ;
          LED_PIN = 0;   // turn off the led
         }
 
