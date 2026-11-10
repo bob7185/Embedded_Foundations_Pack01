@@ -2,7 +2,7 @@
 
 A PIC16F1827 application that blinks an LED every 500 ms and uses one pushbutton to switch between **RUNNING** and **PAUSED**. The firmware polls two hardware timers rather than relying on blocking delays or timer interrupts.
 
-*Hardware demonstration video: to be added after recording.*
+[Watch the 21-second bench demo](https://youtu.be/MK6W9Lwu7xg) to see the pushbutton pause and resume the heartbeat LED.
 
 ## 1. Project Objective
 
