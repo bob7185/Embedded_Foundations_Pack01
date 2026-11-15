@@ -129,3 +129,18 @@ Some misses remained on hardware despite correct behavior in simulation. To dist
 3. **Use measurements to separate software and hardware symptoms.** Watching RA4 alongside the independent RB1 indicator made it possible to distinguish a questionable input signal from the system's response, and to stop investigating once the evidence supported a defensible conclusion.
 
 **Project status:** The intended foundation-level behaviors were implemented and demonstrated. The intermittent button-contact limitation is documented; this is not a claim of production-grade hardware reliability.
+
+## Timer1 Interrupt Upgrade
+
+The interrupt-driven implementation replaces Timer1 polling with an interrupt service routine while retaining the existing nonblocking button debounce state machine.
+
+### Validated Results
+
+- Heartbeat frequency: 1.00 Hz
+- Heartbeat pulse width: 500.0 ms
+- Duty cycle: 50.00%
+- Successful RUNNING/PAUSED transitions
+- Approximately 500 ms restart interval
+- Button functional regression: 20/20
+
+See the [Interrupt Validation Report](docs/INTERRUPT_VALIDATION_REPORT.md) for implementation details and oscilloscope evidence.
