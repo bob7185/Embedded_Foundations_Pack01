@@ -1,72 +1,71 @@
-# Pack 01 — Final Hardware Validation Report
+# Polling Firmware — Hardware Validation and Fault Investigation
 
-**Project:** PIC16F1827 Embedded Foundations Pack 01  
-**Capture date:** October 26, 2026  
-**Instrument:** Rigol DS1054Z, CH1/RA4 (yellow), CH2/RB1 (cyan)  
-**Firmware checkpoint:** `59fb96a` reported pushed to `main`; final source independently reviewed from the uploaded `main.c`  
-**Assessment:** Foundation objectives demonstrated; suspected hardware-input fault documented.
+**Target:** PIC16F1827  
+**Implementation:** Polling-based heartbeat and button state machine (`main`)  
+**Initial capture date:** October 26, 2026  
+**Corrective action and regression:** November 15, 2026  
+**Instrument:** Rigol DS1054Z  
+**Source reference:** [`59fb96a`](https://github.com/bob7185/Embedded_Foundations_Pack01/commit/59fb96a) (original debounce correction); polling branch reviewed at `26bd845`.
 
-## Purpose and expected behavior
+## 1. Purpose and Expected Behavior
 
-On a complete electrically valid RA4 press/release, the wait-then-sample debouncer should qualify press and release, causing exactly one `RUNNING`/`PAUSED` change. RB1 indicates PAUSED when HIGH and RUNNING when LOW, independently of the RB0 Timer1 heartbeat. The nominal Timer0 debounce threshold is 10 counts, approximately 10.24 ms.
+Verify that a complete, electrically valid RA4 press-and-release event is qualified by the wait-then-sample debouncer and produces one RUNNING/PAUSED transition. RB1 is HIGH in PAUSED and LOW in RUNNING, independently of the RB0 Timer1 heartbeat. Timer0's nominal debounce threshold is 10 counts (approximately 10.24 ms, excluding software overhead).
 
-## Test setup
+## 2. Test Setup
 
-- PIC16F1827 with active-LOW RA4 board pushbutton; CH1 observes the input at the MCU.
-- RB1 diagnostic indicator connected to CH2. Transition is made on qualified release.
-- RA4 falling-edge trigger used; saved screen images collected over USB with UltraSigma.
-- Each trial was a physical press-and-release attempt. Photos/scope screenshots are not substitutes for full raw waveform samples; classification below preserves those limitations.
+- PIC16F1827 development board with active-LOW pushbutton on RA4.
+- CH1 (yellow): RA4 at the microcontroller input.
+- CH2 (cyan): RB1 diagnostic output, which changes on qualified release.
+- RA4 falling-edge trigger; saved screenshots acquired over USB using Rigol UltraSigma.
+- Each trial consisted of a physical press-and-release attempt. Saved screenshots are not full raw waveform records; classifications reflect only the available observations.
 
-## Results
+## 3. Initial Results — October 26, 2026
 
-| ID  | Attempted transition       | RA4 / RB1 observations                                                                  | Classification                                                        | Capture                    |
-| --- | -------------------------- | --------------------------------------------------------------------------------------- | --------------------------------------------------------------------- | -------------------------- |
-| 01  | RUNNING → PAUSED           | RA4 press-release; RB1 LOW → HIGH                                                       | Scope-correlated functional pass                                      | [01](evidence/test_01.png) |
-| 02  | PAUSED → RUNNING           | RA4 press-release; RB1 HIGH → LOW                                                       | Scope-correlated functional pass                                      | [02](evidence/test_02.png) |
-| 03  | RUNNING → PAUSED           | RA4 press-release; RB1 LOW → HIGH                                                       | Scope-correlated functional pass                                      | [03](evidence/test_03.png) |
-| 04  | PAUSED → RUNNING attempted | Short/incomplete RA4 disturbance; RB1 stayed HIGH                                       | No system transition; suspected invalid electrical input              | [04](evidence/test_04.png) |
-| 05  | PAUSED → RUNNING           | Operator observed RB1 LED OFF and system RUNNING; transition not visible in saved frame | Functional pass by operator report; waveform correlation inconclusive | [05](evidence/test_05.png) |
-| 06  | RUNNING → PAUSED           | RA4 press-release; RB1 LOW → HIGH                                                       | Scope-correlated functional pass                                      | [06](evidence/test_06.png) |
+| ID | Attempted transition | RA4 / RB1 observations | Classification | Evidence |
+| --- | --- | --- | --- | --- |
+| 01 | RUNNING → PAUSED | RA4 press-release; RB1 LOW → HIGH | Scope-correlated functional pass | [01](evidence/test_01.png) |
+| 02 | PAUSED → RUNNING | RA4 press-release; RB1 HIGH → LOW | Scope-correlated functional pass | [02](evidence/test_02.png) |
+| 03 | RUNNING → PAUSED | RA4 press-release; RB1 LOW → HIGH | Scope-correlated functional pass | [03](evidence/test_03.png) |
+| 04 | PAUSED → RUNNING attempted | Short/incomplete RA4 disturbance; RB1 remained HIGH | No transition; suspected invalid electrical input | [04](evidence/test_04.png) |
+| 05 | PAUSED → RUNNING | Operator observed RB1 OFF and system RUNNING; transition not visible in saved frame | Operator-confirmed functional pass; scope correlation inconclusive | [05](evidence/test_05.png) |
+| 06 | RUNNING → PAUSED | RA4 press-release; RB1 LOW → HIGH | Scope-correlated functional pass | [06](evidence/test_06.png) |
 
-**Count:** Four independently scope-correlated transitions, one operator-confirmed transition with incomplete capture, and one missed physical actuation correlated with an abnormal RA4 signal. This is **not** a statistically powered reliability study or a quantified firmware pass rate.
+Four transitions were independently correlated with the scope traces; one was confirmed by direct observation but not independently shown in the saved frame. One physical actuation failed to produce a state change and coincided with abnormal RA4 input.
 
-Earlier exploratory test: 17 successful actuations and 3 missed of 20 physical attempts. Electrical validity was not classified for each earlier actuation, so no independent firmware reliability percentage follows from that result.
+An earlier exploratory check recorded 17 successful actuations and three misses out of 20 physical attempts. Electrical validity was not classified for each attempt, so these counts do not establish a firmware-only pass rate.
 
-## Failure investigation
+## 4. Failure Investigation
 
-1. Intermittent missed button events occurred more often on quick presses than long presses.
-2. An RB1 diagnostic LED was added to separate the software state change from Timer1 heartbeat output.
-3. With a failed physical press, CH1 sometimes showed incomplete transitions or intermediate voltages rather than a clean RA4 LOW. RB1 also remained in its prior state.
-4. In-circuit resistance readings across the four-terminal switch appeared inconsistent. Because the switch was measured in-circuit, these readings alone cannot isolate an internal contact defect.
-5. Cleaning the switch improved observed operation, though occasional misses persisted.
+1. Missed button events occurred intermittently, more often with quick presses than long presses.
+2. Firmware review identified missing rejection paths in the press/release state machine. The control flow was corrected; Timer1 overflow-flag handling on resume was also tightened.
+3. RB1 was added as an independent state indicator to distinguish accepted software events from heartbeat output timing.
+4. During some unsuccessful physical actuations, CH1 showed incomplete transitions or intermediate voltages rather than a clean RA4 LOW. RB1 remained in its previous state.
+5. In-circuit resistance readings across the four-terminal switch were inconsistent. These readings alone do not isolate an internal contact defect.
+6. Cleaning the switch improved observed operation, although intermittent misses persisted.
 
-**Most supported diagnosis:** Intermittent switch/contact or adjacent electrical-connection issue in the RA4 input path. Hardware replacement/repair is a reasonable future maintenance action; no further switch probing was necessary to close the foundation exercise. A valid RA4 waveform with no corresponding RB1 transition would warrant reopening firmware/input-processing review.
+**Diagnosis:** The combined evidence supports an intermittent tactile-switch contact or adjacent electrical-connection issue in the RA4 input path. It does not establish the exact internal failure mechanism. A valid RA4 waveform with no corresponding RB1 transition would warrant further firmware review.
 
-## Source review and design defense
+## 5. Implementation Review
 
-The latest supplied `main.c` confirms: correct failed-press rejection to `BUTTON_WAIT_PRESS`; correct failed-release rejection to `BUTTON_WAIT_RELEASE`; RB1 HIGH for PAUSED and LOW for RUNNING; Timer1 reloaded and `TMR1IF` cleared on resume; no blocking delay in the main loop. The engineer completed an oral design defense explaining timer selection, nonblocking polling, four-state debounce and oscilloscope-based fault isolation. **Design defense passed with minor technical-language corrections.**
+The polling firmware implements failed-press rejection to `BUTTON_WAIT_PRESS` and failed-release rejection to `BUTTON_WAIT_RELEASE`. RB1 tracks application state independently of the heartbeat. Timer1 is reloaded and its overflow flag cleared before restart; the PAUSED path stops the timer, clears the flag and holds RB0 LOW. No blocking delays are used in the main loop.
 
-The current source review is static and does not itself demonstrate a new build or independently tie every screenshot to the exact Git object hash. The screenshot of the Git terminal confirms a push of `59fb96a` as reported during the session.
+This static review documents the implementation's control flow. It is not an independent build or a cryptographic association of each historical capture with a particular binary.
 
-## Conclusion and closeout decision
+## 6. Hardware Repair and Regression — November 15, 2026
 
-**Engineering Pack 01 — ACCEPTED for its defined educational foundation scope, with a documented hardware limitation.** The required behavior was implemented and demonstrated under observable valid-input conditions; remaining missed actuations are best explained by intermittent RA4 electrical input, not proved to be software failures. This assessment does **not** certify production reliability, eliminate every firmware defect or prove the exact physical component failure.
+The tactile switch connected to RA4 was replaced to address the intermittent input behavior. Regression testing was then performed with the existing polling-based firmware.
 
-Further bench debugging is out of scope unless contradictory evidence emerges. Recommended future board maintenance: replace or repair the suspect tactile switch/connection, then retest if reusing the board for a higher-reliability application.
+| Physical actuation | Successful / attempted |
+| --- | ---: |
+| Normal presses | 10/10 |
+| Short presses | 5/5 |
+| Long presses | 5/5 |
+| **Total** | **20/20** |
 
-## Hardware Repair and Regression Test — November 15, 2026
+**Missed actuations:** 0. The result was recorded by direct bench observation. The previously observed symptom did not recur during the regression run.
 
-The tactile switch connected to RA4 was replaced to address the previously observed intermittent input behavior.
+## 7. Conclusion
 
-Regression testing was performed using the existing polling-based firmware.
+The polling firmware demonstrated the required RUNNING/PAUSED behavior with valid electrical input. Historical missed actuations were associated with an abnormal RA4 input, and the symptom was not reproduced in the 20-actuation regression after replacement of the tactile switch. The repaired hardware provides the functional baseline for the Timer1 interrupt revision.
 
-| Test                  | Result |
-| --------------------- | ------ |
-| Normal button presses | 10/10  |
-| Short button presses  | 5/5    |
-| Long button presses   | 5/5    |
-| Missed actuations     | 0      |
-
-**Conclusion:** All 20 button actuations passed. The previously observed intermittent behavior was not reproduced following switch replacement. The documented hardware limitation is considered resolved within the scope of this regression test.
-
-This establishes the functional hardware baseline for the upcoming Timer1 interrupt implementation.
+The findings are limited to the observed test conditions. They do not establish a statistical lifetime reliability rate, prove an exact component-level failure mechanism or certify production readiness. The original captures are preserved to document the investigation and corrective action.
