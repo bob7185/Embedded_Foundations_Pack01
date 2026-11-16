@@ -1,131 +1,147 @@
-# Foundation Pack 01 — Non-Blocking Super-Loop
+# PIC16F1827 — Non-Blocking Heartbeat and Pushbutton Control
 
-A PIC16F1827 application that blinks an LED every 500 ms and uses one pushbutton to switch between **RUNNING** and **PAUSED**. The firmware polls two hardware timers rather than relying on blocking delays or timer interrupts.
+**Register-level embedded C | Hardware timers | State machines | Oscilloscope-based fault isolation**
 
-[Watch the 21-second bench demo](https://youtu.be/MK6W9Lwu7xg) to see the pushbutton pause and resume the heartbeat LED.
+This firmware implements a periodic LED heartbeat and pushbutton-controlled RUNNING and PAUSED states on a PIC16F1827. The polling baseline uses two hardware timers and a non-blocking super-loop. A subsequent revision moves heartbeat generation into a Timer1 interrupt service routine while retaining the button state machine.
+
+## Implementation revisions
+
+| Revision                                                                                                          | Architecture                         | Documentation                                                                                                                                           |
+| ----------------------------------------------------------------------------------------------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Polling baseline (`main`)                                                                                         | Timer0 and Timer1 polling            | [Hardware validation report](docs/VALIDATION_REPORT.md)                                                                                                 |
+| [Interrupt-driven revision](https://github.com/bob7185/Embedded_Foundations_Pack01/tree/feature/timer1-interrupt) | Timer1 ISR and Timer0 button polling | [Interrupt validation report](https://github.com/bob7185/Embedded_Foundations_Pack01/blob/feature/timer1-interrupt/docs/INTERRUPT_VALIDATION_REPORT.md) |
+
+[Watch the 21-second polling implementation bench demonstration](https://youtu.be/MK6W9Lwu7xg).
 
 ## 1. Project Objective
 
-Design, implement, and test a non-blocking embedded application using the PIC16F1827 microcontroller. The aim was to build a practical understanding of GPIO configuration, timer calculations, state machines, and the difference between software behavior and real electrical signals.
+Implement and validate a register-level embedded C application that generates a periodic heartbeat and processes a mechanical pushbutton without blocking delays.
 
-### Functional Requirements
+### Functional requirements
 
-- Start in **RUNNING** with the heartbeat LED toggling every 500 ms.
-- Accept a valid button press-release event to enter **PAUSED**, turning the heartbeat LED OFF.
-- Accept the next valid event to resume a fresh 500 ms heartbeat interval.
-- Monitor the button continuously, without calls such as `__delay_ms()`.
-- Avoid repeated toggles while the button remains held.
+- Initialize in RUNNING, toggling RB0 at a nominal 500 ms interval (1 Hz full waveform).
+- Accept a qualified press-and-release event to enter PAUSED and force the heartbeat output LOW.
+- Accept the next qualified event to return to RUNNING with a fresh heartbeat interval.
+- Monitor the button in both states without blocking delay calls such as `__delay_ms()`.
+- Prevent repeated state changes while the button remains held.
 
 ## 2. Hardware
 
-### Development Equipment
+| Equipment           | Description                      |
+| ------------------- | -------------------------------- |
+| Development board   | Microchip Demo Board, 02-01630-1 |
+| Microcontroller     | PIC16F1827                       |
+| Programmer/debugger | MPLAB ICD 3                      |
+| Development tools   | MPLAB X IDE, XC8                 |
+| Oscilloscope        | Rigol DS1054Z                    |
 
-| Component | Description |
-| --- | --- |
-| Development board | Microchip Demo Board, 02-01630-1 |
-| Microcontroller | PIC16F1827 |
-| Programmer/debugger | MPLAB ICD 3 |
-| Development tools | MPLAB X IDE, XC8 |
-| Oscilloscope | Rigol DS1054Z |
+| Component            | Connection     | Purpose                        |
+| -------------------- | -------------- | ------------------------------ |
+| D1                   | Onboard        | Power indicator                |
+| D2                   | RB0 through J6 | Heartbeat LED                  |
+| S2                   | RA4            | Active-LOW pushbutton          |
+| Onboard pull-up      | 4.7 kΩ         | Holds RA4 HIGH when released   |
+| Onboard LED resistor | 470 Ω          | LED current limiting           |
+| Diagnostic LED       | RB1            | HIGH in PAUSED, LOW in RUNNING |
 
-### Hardware Connections
-
-| Component | Connection | Purpose |
-| --- | --- | --- |
-| D1 | Onboard | Power indicator |
-| D2 | RB0 through J6 | 500 ms heartbeat LED |
-| S2 | RA4 | Active-LOW button input |
-| Onboard pull-up | 4.7 kΩ | Holds RA4 HIGH when released |
-| Onboard LED resistor | 470 Ω | LED current limiting |
-| Diagnostic LED | RB1 | ON in PAUSED, OFF in RUNNING |
-
-Jumper J6 connects the onboard PORTB LEDs. No external button or LED circuit was needed.
+Jumper J6 connects the onboard PORTB LEDs. The original tactile switch was subsequently replaced following the fault investigation described below.
 
 ## 3. Super-Loop Architecture
 
-The main loop keeps two independent activities moving: it checks the button's debounce state and polls Timer1 for the heartbeat. Neither activity waits for the other to finish, and no interrupt service routine is used.
+The main loop polls Timer1 for heartbeat timing and Timer0 for button qualification. Neither activity uses blocking delays or an interrupt service routine.
 
-Two state variables keep the responsibilities separate: `systemState` tracks **RUNNING/PAUSED**, while `buttonState` tracks progress through a full press-and-release event. This separation also made debugging easier: RB1 could indicate a confirmed system-state change without relying on the heartbeat LED.
+```text
+Timer1 overflow ──> main-loop polling ──> RB0 heartbeat
+RA4 button ───────> Timer0 debounce ────> qualified release
+                                           └─ RUNNING / PAUSED transition
+```
 
-## 4. Application States
+The application separates `systemState`, which tracks RUNNING and PAUSED, from `buttonState`, which tracks press-and-release qualification. RB1 provides an independent indication of application-state changes.
 
-### RUNNING
+## 4. Application States and Button Qualification
 
-The heartbeat LED on RB0 toggles every 500 ms. The pushbutton remains active. A confirmed press-and-release event enters **PAUSED**.
+| State   | RB0 heartbeat                | RB1 diagnostic | Button monitoring |
+| ------- | ---------------------------- | -------------- | ----------------- |
+| RUNNING | Toggles every nominal 500 ms | LOW            | Active            |
+| PAUSED  | Held LOW; Timer1 stopped     | HIGH           | Active            |
 
-### PAUSED
+The debounce state machine uses a wait-then-sample approach:
 
-Timer1 is stopped and RB0 is held OFF. The button remains active; the next confirmed event returns the application to **RUNNING**. RB1 is ON only while paused.
+1. `BUTTON_WAIT_PRESS` — detect LOW, reset Timer0 and begin press qualification.
+2. `BUTTON_DEBOUNCE_PRESS` — after the threshold, accept LOW and advance to `BUTTON_WAIT_RELEASE`; otherwise return to `BUTTON_WAIT_PRESS`.
+3. `BUTTON_WAIT_RELEASE` — detect HIGH, reset Timer0 and begin release qualification.
+4. `BUTTON_DEBOUNCE_RELEASE` — after the threshold, accept HIGH and change the application state; otherwise return to `BUTTON_WAIT_RELEASE`.
 
-### Button Debounce State Machine
+The design allows contact bounce during the waiting interval; it does not establish continuous input stability throughout that interval. A failed release candidate preserves the previously qualified press.
 
-Mechanical contacts can bounce before settling. This application uses a **wait-then-sample** approach: detect a candidate edge, allow approximately 10 ms for bouncing, then sample RA4 to accept or reject that candidate.
+## 5. Timing Design
 
-1. `BUTTON_WAIT_PRESS` — detect a LOW, reset Timer0, and begin press validation.
-2. `BUTTON_DEBOUNCE_PRESS` — after the interval, accept LOW and move to `BUTTON_WAIT_RELEASE`; otherwise return to `BUTTON_WAIT_PRESS`.
-3. `BUTTON_WAIT_RELEASE` — detect a HIGH, reset Timer0, and begin release validation.
-4. `BUTTON_DEBOUNCE_RELEASE` — after the interval, accept HIGH and change the system state; otherwise return to `BUTTON_WAIT_RELEASE`.
+The 8-bit Timer0 cannot generate the required 500 ms interval with a single overflow under the selected clock settings without additional software tracking. Timer1 provides the longer interval, while Timer0 qualifies button events.
 
-The design deliberately **allows** bouncing during the waiting period; it does not claim to prove the signal stayed continuously stable for 10 ms. A key firmware correction was to add the missing rejection branches. A failed release must not erase a previously confirmed press.
+| Setting                      | Value                                                |
+| ---------------------------- | ---------------------------------------------------- |
+| Internal oscillator, nominal | 500 kHz                                              |
+| Instruction clock            | 125 kHz (`Fosc / 4`)                                 |
+| Timer1 prescaler             | 1:1                                                  |
+| Timer1 tick                  | 8 µs                                                 |
+| Timer1 preload               | `0x0BDC` (3036)                                      |
+| Nominal Timer1 interval      | 62,500 counts × 8 µs = 500 ms                        |
+| Timer0 prescaler             | 1:128                                                |
+| Timer0 tick                  | 1.024 ms                                             |
+| Debounce threshold           | `TMR0 >= 10`, nominal 10.24 ms plus polling overhead |
 
-## 5. Timing
+When paused, Timer1 stops, its overflow flag is cleared and RB0 is forced LOW. On resume, the counter is reloaded, the flag cleared and counting restarted. Actual timing depends on oscillator accuracy and polling/reload latency. The captures below focus on input behavior rather than precision heartbeat metrology.
 
-Timer0 was initially considered for the heartbeat. Under the chosen settings, its 8-bit counter could not produce a 500 ms interval with a single overflow without additional software tracking. The 16-bit Timer1 made that part simpler; Timer0 remained useful for short debounce intervals.
+## 6. Hardware Verification
 
-| Setting | Value / reasoning |
-| --- | --- |
-| Internal oscillator | 500 kHz |
-| Instruction clock | 125 kHz (`Fosc / 4`) |
-| Timer1 | 1:1 prescaler; preload `0x0BDC` (3036) |
-| Timer1 interval | 62,500 counts × 8 µs = **nominal 500 ms** |
-| Timer0 | 1:128 prescaler, approximately 1.024 ms per count |
-| Debounce threshold | `TMR0 >= 10`, approximately 10.24 ms plus polling overhead |
+The Rigol DS1054Z monitored RA4 on CH1 (yellow) and RB1 on CH2 (cyan). RB1 indicates whether the application accepted a button event and changed state independently of the heartbeat.
 
-When paused, Timer1 stops, its overflow flag is cleared, and RB0 turns OFF. On resume, the timer is reloaded, its flag cleared, and counting restarts. The 500 ms heartbeat was checked on the scope earlier in development. The captures below focus on button electrical behavior, not precision heartbeat metrology.
+**Test 02 — PAUSED → RUNNING.** RA4 press-and-release followed by RB1 HIGH → LOW.
 
-## 6. Test Evidence
+![Test 02: PAUSED to RUNNING](docs/evidence/test_02.png)
 
-Testing used the real PIC board and a Rigol DS1054Z. **CH1 (yellow)** monitored RA4, the electrical button input; **CH2 (cyan)** monitored RB1, the independently driven system-state indicator. A change on RB1 shows that the application accepted an event and updated `systemState`.
+**Test 04 — Missed PAUSED → RUNNING request.** An incomplete LOW-going RA4 disturbance occurs while RB1 remains HIGH. The capture supports an input-path issue but does not establish an exact pulse-width threshold.
 
-### Representative captures
+![Test 04: abnormal RA4 input](docs/evidence/test_04.png)
 
-**Test 02 — PAUSED → RUNNING.** RA4 shows a press-and-release sequence, and RB1 changes from HIGH to LOW as expected.
+**Test 06 — RUNNING → PAUSED.** RA4 press-and-release followed by RB1 LOW → HIGH.
 
-![Test 02: PAUSED to RUNNING](images/test_02.png)
+![Test 06: RUNNING to PAUSED](docs/evidence/test_06.png)
 
-**Test 04 — missed PAUSED → RUNNING request.** RA4 shows only a brief, incomplete LOW-going disturbance; RB1 stays HIGH. This supports an input-contact problem rather than a Timer1-only problem. The image alone does not establish an exact pulse-width threshold.
+| Trial | Intended transition | Observation                                                                     | Evidence                             |
+| ----- | ------------------- | ------------------------------------------------------------------------------- | ------------------------------------ |
+| 01    | RUNNING → PAUSED    | Transition observed                                                             | [Capture](docs/evidence/test_01.png) |
+| 02    | PAUSED → RUNNING    | Transition observed                                                             | [Capture](docs/evidence/test_02.png) |
+| 03    | RUNNING → PAUSED    | Transition observed                                                             | [Capture](docs/evidence/test_03.png) |
+| 04    | PAUSED → RUNNING    | No transition; abnormal RA4 signal                                              | [Capture](docs/evidence/test_04.png) |
+| 05    | PAUSED → RUNNING    | Operator confirmed RUNNING; transition not independently visible in saved frame | [Capture](docs/evidence/test_05.png) |
+| 06    | RUNNING → PAUSED    | Transition observed                                                             | [Capture](docs/evidence/test_06.png) |
 
-![Test 04: abnormal RA4 input; no state transition](images/test_04.png)
+An earlier 20-actuation check produced 17 successes and three misses. Electrical validity was not established for each attempt, so this is a combined board-behavior result, not a firmware-only reliability rate.
 
-**Test 06 — RUNNING → PAUSED.** RA4 shows a press-and-release event; RB1 changes LOW to HIGH.
+## 7. Fault Investigation and Corrective Action
 
-![Test 06: RUNNING to PAUSED](images/test_06.png)
+Intermittent missed events initially prompted investigation of Timer0 and debounce control flow. Source review identified missing rejection paths in the button state machine, which were corrected. Timer1 overflow-flag handling on resume was also tightened.
 
-### Six-trial log
+Misses persisted on hardware despite correct behavior in simulation. RB1 was introduced to distinguish accepted application-state transitions from heartbeat activity. Oscilloscope captures associated some missed events with incomplete or intermediate-voltage RA4 signals. In-circuit resistance measurements appeared inconsistent; cleaning the switch improved operation but did not eliminate all observed misses.
 
-| Trial | Intended transition | Observation | Evidence |
-| --- | --- | --- | --- |
-| 01 | RUNNING → PAUSED | Transition observed | [Capture](images/test_01.png) |
-| 02 | PAUSED → RUNNING | Transition observed | [Capture](images/test_02.png) |
-| 03 | RUNNING → PAUSED | Transition observed | [Capture](images/test_03.png) |
-| 04 | PAUSED → RUNNING | No transition; brief/abnormal RA4 signal | [Capture](images/test_04.png) |
-| 05 | PAUSED → RUNNING | Operator confirmed RUNNING; screenshot does **not** independently show RB1 changing | [Capture](images/test_05.png) |
-| 06 | RUNNING → PAUSED | Transition observed | [Capture](images/test_06.png) |
+The evidence supported an intermittent switch contact or adjacent input connection fault without isolating the exact physical failure mechanism.
 
-An earlier 20-cycle functional check produced **17 successful operations and 3 misses**. Because valid electrical input was not verified on every one of those trials, that number describes the combined board behavior—not a measured firmware-only reliability rate.
+On November 15, 2026, the RA4 tactile switch was replaced. Regression testing with the polling firmware produced the following results:
 
-## 7. What Failed and Troubleshooting
+| Actuation category | Result |
+| ------------------ | -----: |
+| Normal             |  10/10 |
+| Short              |    5/5 |
+| Long               |    5/5 |
+| Total              |  20/20 |
 
-The application began showing occasional missed button events, especially during short presses. Timer0 overflow and debounce control flow were early suspects. Code review uncovered missing rejection paths in the button-state machine, which were corrected. The Timer1 overflow flag handling on resume was also tightened.
+The previously observed intermittent symptom was not reproduced following replacement under these test conditions. See the [complete hardware validation report](docs/VALIDATION_REPORT.md).
 
-Some misses remained on hardware despite correct behavior in simulation. To distinguish button processing from heartbeat timing, RB1 was added as an independent indicator of accepted RUNNING/PAUSED transitions. Scope captures then showed a pattern: valid input events generally produced the expected state change, while some missed presses produced no proper LOW at RA4. In one capture, the input only dipped briefly instead of making a sustained LOW transition. Resistance measurements around the switch were also unusual, and cleaning the switch appeared to improve its response.
+## 8. Engineering Conclusions and Development Progression
 
-**Engineering conclusion:** The evidence strongly suggests an intermittent switch contact or nearby connection issue. It does not isolate the exact failed physical component or prove the firmware has no remaining defects. Replacing the suspect switch is the recommended hardware corrective action if the board remains in service. No further switch experiments were needed for this foundation exercise.
+The polling implementation demonstrates independent timer servicing, non-blocking button qualification and explicit application-state transitions. The input investigation illustrates the value of monitoring both the electrical input and an independent firmware state indicator.
 
-## 8. Engineering Takeaways
+The [interrupt-driven revision](https://github.com/bob7185/Embedded_Foundations_Pack01/tree/feature/timer1-interrupt) removes heartbeat servicing from the polling loop. Its separate validation report documents two Timer1 configurations, pause/resume behavior, button regression and power-on initialization tests. The polling implementation remains on `main` as the original architecture reference.
 
-1. **Match timer capabilities to the timing job.** Timer1 simplified the 500 ms heartbeat; Timer0 provided the shorter debounce interval without blocking the loop.
-2. **Handle unsuccessful state transitions explicitly.** Confirming a press is only half the design. Failed press and release candidates must return to the correct waiting states.
-3. **Use measurements to separate software and hardware symptoms.** Watching RA4 alongside the independent RB1 indicator made it possible to distinguish a questionable input signal from the system's response, and to stop investigating once the evidence supported a defensible conclusion.
-
-**Project status:** The intended foundation-level behaviors were implemented and demonstrated. The intermittent button-contact limitation is documented; this is not a claim of production-grade hardware reliability.
+The reported bench tests demonstrate the defined behavior under the recorded conditions. They do not establish production reliability, absolute timing accuracy or a formal worst-case response bound.
